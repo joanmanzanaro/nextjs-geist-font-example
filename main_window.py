@@ -1,67 +1,31 @@
-import os
-os.environ['QT_QPA_PLATFORM'] = 'minimal'
-
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QPushButton,
-                           QFileDialog, QLabel, QLineEdit, QSlider, QHBoxLayout, QTextEdit, QMessageBox,
-                           QMenuBar, QMenu, QDialog, QFormLayout, QDialogButtonBox,
-                           QTabWidget, QListWidget, QListWidgetItem, QAbstractItemView, QTableWidget, QTableWidgetItem,
-                           QInputDialog, QRadioButton, QButtonGroup, QFrame, QSplitter, QProgressDialog,
-                           QTreeWidget, QTreeWidgetItem, QComboBox, QScrollArea, QCompleter, QStatusBar)
-from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal, QTimer, QPoint, QMimeData, QUrl, QDateTime
-from PyQt6.QtGui import (QIcon, QFont, QPalette, QColor, QPixmap, QKeySequence, QDrag, QImage, 
-                        QAction, QShortcut)
 import sys
-import shutil
+import os
 import json
 import hashlib
 from typing import Optional, List, Dict, Any
-from PIL import Image as PILImage
-from PIL.ExifTags import TAGS
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
+    QFileDialog, QLabel, QListWidget, QListWidgetItem, QTableWidget, QTableWidgetItem,
+    QTabWidget, QLineEdit, QMessageBox, QStatusBar, QComboBox, QProgressDialog, QTreeWidget,
+    QTreeWidgetItem, QInputDialog, QAbstractItemView, QScrollArea
+)
+from PyQt6.QtCore import Qt, QDateTime
+from PyQt6.QtGui import QFont, QPixmap
 from db_manager import DBManager, DBError
 from reference_service import ReferenceService
 from watermark_service import WatermarkService
 from social_media_service import SocialMediaService
+from PIL import Image as PILImage
+from PIL.ExifTags import TAGS
 
 CONFIG_FILE = "config.json"
 
-class ImageCache:
-    """Cache for storing frequently accessed image previews."""
-    
-    def __init__(self, max_size: int = 100):
-        self.cache = {}
-        self.max_size = max_size
-        self.access_order = []
-
-    def get(self, path: str) -> Optional[QPixmap]:
-        if path in self.cache:
-            self._update_access(path)
-            return self.cache[path]
-        return None
-
-    def put(self, path: str, pixmap: QPixmap) -> None:
-        if len(self.cache) >= self.max_size:
-            self._evict()
-        self.cache[path] = pixmap
-        self._update_access(path)
-
-    def _update_access(self, path: str) -> None:
-        if path in self.access_order:
-            self.access_order.remove(path)
-        self.access_order.append(path)
-
-    def _evict(self) -> None:
-        if self.access_order:
-            oldest = self.access_order.pop(0)
-            del self.cache[oldest]
-
 class MainWindow(QMainWindow):
-    """Main application window for the Photo Gallery application."""
-    
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Photo Gallery")
         self.setGeometry(100, 100, 1200, 800)
-        
+
         # Initialize services
         try:
             self.db_manager = DBManager()
@@ -71,134 +35,51 @@ class MainWindow(QMainWindow):
         except DBError as e:
             QMessageBox.critical(self, "Database Error", str(e))
             sys.exit(1)
-        
-        # Initialize image cache
-        self.image_cache = ImageCache()
-        
-        # Initialize preview timer for delayed loading
-        self.preview_timer = QTimer()
-        self.preview_timer.setSingleShot(True)
-        self.preview_timer.timeout.connect(self.load_preview)
-        self.current_preview_path = None
-        
-        # Set up UI
+
+        # Initialize UI components
         self._setup_ui()
-        self._setup_shortcuts()
         self.load_config()
-        
-        print("Window initialized successfully")
 
-    def load_preview(self) -> None:
-        """Load and display the preview image."""
-        if not self.current_preview_path or not hasattr(self, 'preview_label'):
-            return
+        # Load initial data
+        self.refresh_db_table()
+        self.update_stats()
 
-        try:
-            # Check cache first
-            pixmap = self.image_cache.get(self.current_preview_path)
-            if pixmap:
-                self.preview_label.setPixmap(pixmap)
-                return
-
-            # Load and scale image
-            pixmap = QPixmap(self.current_preview_path)
-            scaled_pixmap = pixmap.scaled(
-                self.preview_label.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            
-            # Cache the scaled pixmap
-            self.image_cache.put(self.current_preview_path, scaled_pixmap)
-            
-            # Update UI
-            self.preview_label.setPixmap(scaled_pixmap)
-            self.load_image_metadata(self.current_preview_path)
-            
-        except Exception as e:
-            self.status_bar.showMessage(f"Error loading preview: {str(e)}")
-            self.preview_label.setText("Error loading image")
-
-    def load_image_metadata(self, image_path: str) -> None:
-        """Load and display image metadata."""
-        self.metadata_tree.clear()
-        try:
-            with PILImage.open(image_path) as img:
-                # Basic image info
-                info_item = QTreeWidgetItem(["Image Info"])
-                self.metadata_tree.addTopLevelItem(info_item)
-                info_item.addChild(QTreeWidgetItem(["Format", img.format]))
-                info_item.addChild(QTreeWidgetItem(["Size", f"{img.width} x {img.height}"]))
-                info_item.addChild(QTreeWidgetItem(["Mode", img.mode]))
-                
-                # EXIF data
-                if hasattr(img, '_getexif') and img._getexif():
-                    exif = img._getexif()
-                    exif_item = QTreeWidgetItem(["EXIF Data"])
-                    self.metadata_tree.addTopLevelItem(exif_item)
-                    
-                    for tag_id in exif:
-                        try:
-                            tag = TAGS.get(tag_id, tag_id)
-                            value = str(exif[tag_id])
-                            exif_item.addChild(QTreeWidgetItem([tag, value]))
-                        except:
-                            continue
-        except Exception as e:
-            self.status_bar.showMessage(f"Error loading metadata: {str(e)}")
-
-    def _setup_ui(self) -> None:
-        """Set up the main user interface."""
-        # Create central widget and main layout
+    def _setup_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(10)
 
-        # Add search bar
-        search_layout = QHBoxLayout()
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search images by name, tags, or metadata...")
-        self.search_input.textChanged.connect(self.handle_search)
-        
-        self.search_type = QComboBox()
-        self.search_type.addItems(["All", "Filename", "Tags", "Metadata"])
-        
-        search_layout.addWidget(self.search_input)
-        search_layout.addWidget(self.search_type)
-        main_layout.addLayout(search_layout)
-
-        # Create tab widget
+        # Tabs
         self.tabs = QTabWidget()
-        self.tabs.setDocumentMode(True)
-        self.tabs.setMovable(True)
         main_layout.addWidget(self.tabs)
 
-        # Add tabs
+        # Import Images Tab
+        self.import_tab = QWidget()
         self._setup_import_tab()
-        self._setup_database_tab()
-        self._setup_view_tab()
-        self._setup_overview_tab()
+        self.tabs.addTab(self.import_tab, "Import Images")
 
-        # Create status bar
+        # Image Database Tab
+        self.database_tab = QWidget()
+        self._setup_database_tab()
+        self.tabs.addTab(self.database_tab, "Image Database")
+
+        # View Images Tab
+        self.view_tab = QWidget()
+        self._setup_view_tab()
+        self.tabs.addTab(self.view_tab, "View Images")
+
+        # Overview Tab
+        self.overview_tab = QWidget()
+        self._setup_overview_tab()
+        self.tabs.addTab(self.overview_tab, "Overview")
+
+        # Status Bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
 
-    def _setup_shortcuts(self) -> None:
-        """Set up keyboard shortcuts."""
-        QShortcut(QKeySequence("Ctrl+F"), self).activated.connect(
-            lambda: self.search_input.setFocus())
-        QShortcut(QKeySequence("Esc"), self).activated.connect(
-            lambda: self.search_input.clear())
+    def _setup_import_tab(self):
+        layout = QVBoxLayout(self.import_tab)
 
-    def _setup_import_tab(self) -> None:
-        """Set up the Import Images tab."""
-        import_tab = QWidget()
-        layout = QVBoxLayout(import_tab)
-        
-        # File type filter
-        filter_layout = QHBoxLayout()
         self.file_type_filter = QComboBox()
         self.file_type_filter.addItems([
             "All Images (*.png *.jpg *.jpeg *.bmp)",
@@ -206,76 +87,250 @@ class MainWindow(QMainWindow):
             "JPEG Files (*.jpg *.jpeg)",
             "BMP Files (*.bmp)"
         ])
-        filter_layout.addWidget(QLabel("File Type:"))
-        filter_layout.addWidget(self.file_type_filter)
-        filter_layout.addStretch()
-        layout.addLayout(filter_layout)
+        layout.addWidget(self.file_type_filter)
 
-        # Import list
         self.import_list = QListWidget()
         self.import_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.import_list.setAcceptDrops(True)
         layout.addWidget(self.import_list)
 
-        # Import button
         import_btn = QPushButton("Import Images")
         import_btn.clicked.connect(self.import_images)
         layout.addWidget(import_btn)
 
-        self.tabs.addTab(import_tab, "Import Images")
+        select_btn = QPushButton("Select Files to Import")
+        select_btn.clicked.connect(self.select_files_to_import)
+        layout.addWidget(select_btn)
 
-    def _setup_database_tab(self) -> None:
-        """Set up the Image Database tab."""
-        db_tab = QWidget()
-        layout = QVBoxLayout(db_tab)
+    def select_files_to_import(self):
+        file_dialog = QFileDialog(self)
+        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
+        file_dialog.setNameFilter(self.file_type_filter.currentText())
+        if file_dialog.exec():
+            files = file_dialog.selectedFiles()
+            self.import_list.clear()
+            self.import_list.addItems(files)
 
-        # Database table
+    def import_images(self):
+        files = [self.import_list.item(i).text() for i in range(self.import_list.count())]
+        if not files:
+            QMessageBox.information(self, "No Files", "No files selected for import.")
+            return
+
+        progress = QProgressDialog("Importing images...", "Cancel", 0, len(files), self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.show()
+
+        imported_count = 0
+        for i, path in enumerate(files):
+            if progress.wasCanceled():
+                break
+            try:
+                md5 = self.compute_md5(path)
+                if not self.db_manager.get_image_by_md5(md5):
+                    ref_code = self.reference_service.generate_ordered_code()
+                    self.db_manager.add_image(path, md5, ref_code)
+                    imported_count += 1
+            except Exception as e:
+                self.status_bar.showMessage(f"Error importing {path}: {str(e)}")
+            progress.setValue(i + 1)
+
+        progress.close()
+        self.status_bar.showMessage(f"Imported {imported_count} images.")
+        self.import_list.clear()
+        self.refresh_db_table()
+        self.update_stats()
+
+    def _setup_database_tab(self):
+        layout = QVBoxLayout(self.database_tab)
+
         self.db_table = QTableWidget()
         self.db_table.setColumnCount(4)
         self.db_table.setHorizontalHeaderLabels(["ID", "File Path", "Reference Code", "Tags"])
         self.db_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.db_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.db_table.cellClicked.connect(self.on_db_table_cell_clicked)
         layout.addWidget(self.db_table)
 
-        self.tabs.addTab(db_tab, "Image Database")
+    def refresh_db_table(self):
+        try:
+            images_with_tags = self.db_manager.get_all_images_with_tags()
+            self.db_table.setRowCount(len(images_with_tags))
+            for row, (image, tags) in enumerate(images_with_tags):
+                self.db_table.setItem(row, 0, QTableWidgetItem(str(image['id'])))
+                file_path = image.get('project_path') or (image.get('locations') or [''])[0]
+                self.db_table.setItem(row, 1, QTableWidgetItem(file_path))
+                self.db_table.setItem(row, 2, QTableWidgetItem(image.get('reference_code', '')))
+                tag_names = ", ".join(tag['name'] for tag in tags)
+                self.db_table.setItem(row, 3, QTableWidgetItem(tag_names))
+        except DBError as e:
+            QMessageBox.warning(self, "Database Error", str(e))
 
-    def _setup_view_tab(self) -> None:
-        """Set up the View Images tab."""
-        view_tab = QWidget()
-        layout = QVBoxLayout(view_tab)
+    def on_db_table_cell_clicked(self, row, column):
+        image_id_item = self.db_table.item(row, 0)
+        if not image_id_item:
+            return
+        image_id = int(image_id_item.text())
+        self.load_image_details(image_id)
 
-        # Preview area
-        self.preview_label = QLabel()
+    def _setup_view_tab(self):
+        layout = QVBoxLayout(self.view_tab)
+
+        self.preview_label = QLabel("Select an image from the database tab to view details.")
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setWordWrap(True)
         layout.addWidget(self.preview_label)
 
-        # Metadata tree
         self.metadata_tree = QTreeWidget()
         self.metadata_tree.setHeaderLabels(["Property", "Value"])
         layout.addWidget(self.metadata_tree)
 
-        self.tabs.addTab(view_tab, "View Images")
+        tag_layout = QHBoxLayout()
+        self.tag_list = QListWidget()
+        self.tag_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        tag_layout.addWidget(self.tag_list)
 
-    def _setup_overview_tab(self) -> None:
-        """Set up the Overview tab."""
-        overview_tab = QWidget()
-        layout = QVBoxLayout(overview_tab)
+        tag_buttons_layout = QVBoxLayout()
+        add_tag_btn = QPushButton("Add Tag")
+        add_tag_btn.clicked.connect(self.add_tag_to_selected_image)
+        remove_tag_btn = QPushButton("Remove Selected Tag")
+        remove_tag_btn.clicked.connect(self.remove_selected_tag)
+        tag_buttons_layout.addWidget(add_tag_btn)
+        tag_buttons_layout.addWidget(remove_tag_btn)
+        tag_buttons_layout.addStretch()
+        tag_layout.addLayout(tag_buttons_layout)
 
-        # Statistics
-        stats_group = QFrame()
-        stats_layout = QVBoxLayout(stats_group)
+        layout.addLayout(tag_layout)
+
+        self.current_view_image_id: Optional[int] = None
+
+    def load_image_details(self, image_id: int):
+        try:
+            images_with_tags = self.db_manager.get_all_images_with_tags()
+            image_data = next((img for img, _ in images_with_tags if img['id'] == image_id), None)
+            tags = next((t for img, t in images_with_tags if img['id'] == image_id), [])
+            if not image_data:
+                return
+
+            self.current_view_image_id = image_id
+
+            # Load image preview
+            file_path = image_data.get('project_path') or (image_data.get('locations') or [''])[0]
+            if os.path.exists(file_path):
+                pixmap = QPixmap(file_path)
+                scaled_pixmap = pixmap.scaled(400, 400, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                self.preview_label.setPixmap(scaled_pixmap)
+            else:
+                self.preview_label.setText("Image file not found.")
+
+            # Load metadata
+            self.metadata_tree.clear()
+            try:
+                with PILImage.open(file_path) as img:
+                    info_item = QTreeWidgetItem(["Image Info"])
+                    self.metadata_tree.addTopLevelItem(info_item)
+                    info_item.addChild(QTreeWidgetItem(["Format", img.format]))
+                    info_item.addChild(QTreeWidgetItem(["Size", f"{img.width} x {img.height}"]))
+                    info_item.addChild(QTreeWidgetItem(["Mode", img.mode]))
+
+                    exif = img._getexif()
+                    if exif:
+                        exif_item = QTreeWidgetItem(["EXIF Data"])
+                        self.metadata_tree.addTopLevelItem(exif_item)
+                        for tag_id, value in exif.items():
+                            tag = TAGS.get(tag_id, str(tag_id))
+                            exif_item.addChild(QTreeWidgetItem([tag, str(value)]))
+            except Exception:
+                pass
+
+            # Load tags
+            self.tag_list.clear()
+            for tag in tags:
+                self.tag_list.addItem(tag['name'])
+
+            self.tabs.setCurrentWidget(self.view_tab)
+        except DBError as e:
+            QMessageBox.warning(self, "Database Error", str(e))
+
+    def add_tag_to_selected_image(self):
+        if self.current_view_image_id is None:
+            QMessageBox.information(self, "No Image Selected", "Please select an image first.")
+            return
+        tag, ok = QInputDialog.getText(self, "Add Tag", "Enter tag name:")
+        if ok and tag:
+            try:
+                tag_id = self.db_manager.add_tag(tag)
+                self.db_manager.add_tag_to_image(self.current_view_image_id, tag_id)
+                self.load_image_details(self.current_view_image_id)
+                self.update_stats()
+            except DBError as e:
+                QMessageBox.warning(self, "Database Error", str(e))
+
+    def remove_selected_tag(self):
+        if self.current_view_image_id is None:
+            QMessageBox.information(self, "No Image Selected", "Please select an image first.")
+            return
+        selected_items = self.tag_list.selectedItems()
+        if not selected_items:
+            QMessageBox.information(self, "No Tag Selected", "Please select a tag to remove.")
+            return
+        tag_name = selected_items[0].text()
+        try:
+            # Find tag id by name
+            tags = self.db_manager.get_tags_for_image(self.current_view_image_id)
+            tag_id = None
+            for t in tags:
+                if t == tag_name:
+                    # We only have tag names here, so we need to query tag id from db
+                    # For simplicity, assume tag name is unique and get id from db
+                    # This requires a method in db_manager to get tag id by name
+                    # Let's implement a helper here:
+                    tag_id = self.db_manager.get_tag_id_by_name(tag_name)
+                    break
+            if tag_id is None:
+                QMessageBox.warning(self, "Tag Not Found", "Tag not found in database.")
+                return
+            self.db_manager.remove_tag_from_image(self.current_view_image_id, tag_id)
+            self.load_image_details(self.current_view_image_id)
+            self.update_stats()
+        except DBError as e:
+            QMessageBox.warning(self, "Database Error", str(e))
+
+    def _setup_overview_tab(self):
+        layout = QVBoxLayout(self.overview_tab)
+
         self.stats_label = QLabel()
-        stats_layout.addWidget(self.stats_label)
-        layout.addWidget(stats_group)
+        layout.addWidget(self.stats_label)
 
-        # Recent operations
         self.operations_list = QListWidget()
         layout.addWidget(self.operations_list)
 
-        self.tabs.addTab(overview_tab, "Overview")
+    def update_stats(self):
+        try:
+            total_images = self.db_table.rowCount()
+            tagged_images = 0
+            for row in range(total_images):
+                tags_item = self.db_table.item(row, 3)
+                if tags_item and tags_item.text().strip():
+                    tagged_images += 1
+            recent_ops = self.operations_list.count()
 
-    def load_config(self) -> None:
-        """Load application configuration from file."""
+            stats_text = (
+                f"Total Images: {total_images}\n"
+                f"Tagged Images: {tagged_images}\n"
+                f"Recent Operations: {recent_ops}"
+            )
+            self.stats_label.setText(stats_text)
+        except Exception as e:
+            self.status_bar.showMessage(f"Error updating stats: {str(e)}")
+
+    def compute_md5(self, file_path: str) -> str:
+        hash_md5 = hashlib.md5()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        return hash_md5.hexdigest()
+
+    def load_config(self):
         try:
             with open(CONFIG_FILE, "r") as f:
                 config = json.load(f)
@@ -287,109 +342,3 @@ class MainWindow(QMainWindow):
             self.social_media_service = SocialMediaService(access_token="", instagram_account_id="")
         except json.JSONDecodeError:
             QMessageBox.warning(self, "Configuration Error", "Invalid configuration file format")
-        
-        self.refresh_db_table()
-
-    def compute_md5(self, file_path: str) -> str:
-        """Compute MD5 hash of a file."""
-        hash_md5 = hashlib.md5()
-        with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
-                hash_md5.update(chunk)
-        return hash_md5.hexdigest()
-
-    def handle_search(self, text: str) -> None:
-        """Handle search input changes."""
-        if not text:
-            self.refresh_db_table()
-            return
-
-        try:
-            images = self.db_manager.search_images(text, self.search_type.currentText().lower())
-            self.update_table_with_images(images)
-        except DBError as e:
-            QMessageBox.warning(self, "Search Error", str(e))
-
-    def import_images(self) -> None:
-        """Import images from file system."""
-        file_dialog = QFileDialog()
-        file_paths, _ = file_dialog.getOpenFileNames(
-            self, 
-            "Select Images",
-            "",
-            self.file_type_filter.currentText()
-        )
-        
-        if not file_paths:
-            return
-
-        progress = QProgressDialog("Importing images...", "Cancel", 0, len(file_paths), self)
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        
-        for i, path in enumerate(file_paths):
-            if progress.wasCanceled():
-                break
-                
-            try:
-                md5 = self.compute_md5(path)
-                if not self.db_manager.get_image_by_md5(md5):
-                    ref_code = self.reference_service.generate_ordered_code()
-                    self.db_manager.add_image(path, md5, ref_code)
-                    self.log_operation(f"Imported: {os.path.basename(path)}")
-            except Exception as e:
-                self.log_operation(f"Error importing {path}: {str(e)}")
-            
-            progress.setValue(i + 1)
-        
-        self.refresh_db_table()
-
-    def refresh_db_table(self) -> None:
-        """Refresh the database table view."""
-        try:
-            images = self.db_manager.get_all_images_with_tags()
-            self.update_table_with_images([img for img, _ in images])
-        except DBError as e:
-            QMessageBox.warning(self, "Database Error", str(e))
-
-    def update_table_with_images(self, images: List[Dict[str, Any]]) -> None:
-        """Update the database table with image data."""
-        self.db_table.setRowCount(len(images))
-        for row, image in enumerate(images):
-            self.db_table.setItem(row, 0, QTableWidgetItem(str(image['id'])))
-            self.db_table.setItem(row, 1, QTableWidgetItem(
-                image['project_path'] or image.get('locations', [''])[0]
-            ))
-            self.db_table.setItem(row, 2, QTableWidgetItem(image['reference_code']))
-            tags = self.db_manager.get_tags_for_image(image['id'])
-            self.db_table.setItem(row, 3, QTableWidgetItem(", ".join(tags)))
-
-    def log_operation(self, message: str) -> None:
-        """Log an operation with timestamp."""
-        timestamp = QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
-        self.operations_list.insertItem(0, f"{timestamp}: {message}")
-        self.update_stats()
-
-    def update_stats(self) -> None:
-        """Update statistics display."""
-        try:
-            total_images = self.db_table.rowCount()
-            tagged_images = sum(1 for row in range(total_images) 
-                              if self.db_table.item(row, 3).text().strip())
-            recent_ops = self.operations_list.count()
-            
-            stats = (f"Total Images: {total_images}\n"
-                    f"Tagged Images: {tagged_images}\n"
-                    f"Recent Operations: {recent_ops}")
-            
-            self.stats_label.setText(stats)
-        except Exception as e:
-            self.status_bar.showMessage(f"Error updating stats: {str(e)}")
-
-def main():
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    return app.exec()
-
-if __name__ == "__main__":
-    sys.exit(main())
