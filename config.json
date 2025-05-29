@@ -1,0 +1,11 @@
+{
+    "instagram_token": "",
+    "instagram_account_id": "",
+    "default_watermark_text": "Copyright © 2024",
+    "default_opacity": 0.5,
+    "project_folder": "project_files",
+    "watermark_image_path": "",
+    "watermark_position_x": 0.9,
+    "watermark_position_y": 0.9,
+    "watermark_scale": 0.1
+}
