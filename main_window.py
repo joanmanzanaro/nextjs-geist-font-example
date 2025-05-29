@@ -7,7 +7,8 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QFileDialog, QLabel, QListWidget, QListWidgetItem, QTableWidget, QTableWidgetItem,
     QTabWidget, QLineEdit, QMessageBox, QStatusBar, QComboBox, QProgressDialog, QTreeWidget,
-    QTreeWidgetItem, QInputDialog, QAbstractItemView, QScrollArea
+    QTreeWidgetItem, QInputDialog, QAbstractItemView, QScrollArea, QFormLayout, QSpinBox,
+    QDoubleSpinBox, QDialog, QDialogButtonBox
 )
 from PyQt6.QtCore import Qt, QDateTime
 from PyQt6.QtGui import QFont, QPixmap
@@ -20,25 +21,83 @@ from PIL.ExifTags import TAGS
 
 CONFIG_FILE = "config.json"
 
+class SettingsDialog(QDialog):
+    def __init__(self, parent=None, config=None):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.config = config or {}
+
+        self.layout = QVBoxLayout(self)
+
+        form_layout = QFormLayout()
+        self.layout.addLayout(form_layout)
+
+        # Watermark settings
+        self.watermark_text_input = QLineEdit(self.config.get("watermark_text", "© My Photo Gallery"))
+        form_layout.addRow("Watermark Text:", self.watermark_text_input)
+
+        self.watermark_opacity_input = QDoubleSpinBox()
+        self.watermark_opacity_input.setRange(0.0, 1.0)
+        self.watermark_opacity_input.setSingleStep(0.1)
+        self.watermark_opacity_input.setValue(self.config.get("watermark_opacity", 0.5))
+        form_layout.addRow("Watermark Opacity:", self.watermark_opacity_input)
+
+        self.watermark_font_size_input = QSpinBox()
+        self.watermark_font_size_input.setRange(8, 72)
+        self.watermark_font_size_input.setValue(self.config.get("watermark_font_size", 36))
+        form_layout.addRow("Watermark Font Size:", self.watermark_font_size_input)
+
+        # Social media API settings
+        self.instagram_token_input = QLineEdit(self.config.get("instagram_token", ""))
+        form_layout.addRow("Instagram Access Token:", self.instagram_token_input)
+
+        self.instagram_account_id_input = QLineEdit(self.config.get("instagram_account_id", ""))
+        form_layout.addRow("Instagram Account ID:", self.instagram_account_id_input)
+
+        # Reference code settings
+        self.reference_prefix_input = QLineEdit(self.config.get("reference_prefix", "REF"))
+        form_layout.addRow("Reference Code Prefix:", self.reference_prefix_input)
+
+        # Dialog buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        self.layout.addWidget(buttons)
+
+    def get_settings(self):
+        return {
+            "watermark_text": self.watermark_text_input.text(),
+            "watermark_opacity": self.watermark_opacity_input.value(),
+            "watermark_font_size": self.watermark_font_size_input.value(),
+            "instagram_token": self.instagram_token_input.text(),
+            "instagram_account_id": self.instagram_account_id_input.text(),
+            "reference_prefix": self.reference_prefix_input.text(),
+        }
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Photo Gallery")
         self.setGeometry(100, 100, 1200, 800)
 
-        # Initialize services
+        # Load config
+        self.config = self.load_config_file()
+
+        # Initialize services with config
         try:
             self.db_manager = DBManager()
-            self.reference_service = ReferenceService()
+            self.reference_service = ReferenceService(prefix=self.config.get("reference_prefix", "REF"))
             self.watermark_service = WatermarkService()
-            self.social_media_service = None
+            self.social_media_service = SocialMediaService(
+                access_token=self.config.get("instagram_token", ""),
+                instagram_account_id=self.config.get("instagram_account_id", "")
+            )
         except DBError as e:
             QMessageBox.critical(self, "Database Error", str(e))
             sys.exit(1)
 
         # Initialize UI components
         self._setup_ui()
-        self.load_config()
 
         # Load initial data
         self.refresh_db_table()
@@ -73,6 +132,11 @@ class MainWindow(QMainWindow):
         self._setup_overview_tab()
         self.tabs.addTab(self.overview_tab, "Overview")
 
+        # Settings Tab
+        self.settings_tab = QWidget()
+        self._setup_settings_tab()
+        self.tabs.addTab(self.settings_tab, "Settings")
+
         # Status Bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -93,13 +157,13 @@ class MainWindow(QMainWindow):
         self.import_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         layout.addWidget(self.import_list)
 
-        import_btn = QPushButton("Import Images")
-        import_btn.clicked.connect(self.import_images)
-        layout.addWidget(import_btn)
-
         select_btn = QPushButton("Select Files to Import")
         select_btn.clicked.connect(self.select_files_to_import)
         layout.addWidget(select_btn)
+
+        import_btn = QPushButton("Import Images")
+        import_btn.clicked.connect(self.import_images)
+        layout.addWidget(import_btn)
 
     def select_files_to_import(self):
         file_dialog = QFileDialog(self)
@@ -275,17 +339,7 @@ class MainWindow(QMainWindow):
             return
         tag_name = selected_items[0].text()
         try:
-            # Find tag id by name
-            tags = self.db_manager.get_tags_for_image(self.current_view_image_id)
-            tag_id = None
-            for t in tags:
-                if t == tag_name:
-                    # We only have tag names here, so we need to query tag id from db
-                    # For simplicity, assume tag name is unique and get id from db
-                    # This requires a method in db_manager to get tag id by name
-                    # Let's implement a helper here:
-                    tag_id = self.db_manager.get_tag_id_by_name(tag_name)
-                    break
+            tag_id = self.db_manager.get_tag_id_by_name(tag_name)
             if tag_id is None:
                 QMessageBox.warning(self, "Tag Not Found", "Tag not found in database.")
                 return
@@ -323,6 +377,58 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.status_bar.showMessage(f"Error updating stats: {str(e)}")
 
+    def _setup_settings_tab(self):
+        layout = QFormLayout(self.settings_tab)
+
+        # Watermark settings
+        self.watermark_text_input = QLineEdit(self.config.get("watermark_text", "© My Photo Gallery"))
+        layout.addRow("Watermark Text:", self.watermark_text_input)
+
+        self.watermark_opacity_input = QDoubleSpinBox()
+        self.watermark_opacity_input.setRange(0.0, 1.0)
+        self.watermark_opacity_input.setSingleStep(0.1)
+        self.watermark_opacity_input.setValue(self.config.get("watermark_opacity", 0.5))
+        layout.addRow("Watermark Opacity:", self.watermark_opacity_input)
+
+        self.watermark_font_size_input = QSpinBox()
+        self.watermark_font_size_input.setRange(8, 72)
+        self.watermark_font_size_input.setValue(self.config.get("watermark_font_size", 36))
+        layout.addRow("Watermark Font Size:", self.watermark_font_size_input)
+
+        # Social media API settings
+        self.instagram_token_input = QLineEdit(self.config.get("instagram_token", ""))
+        layout.addRow("Instagram Access Token:", self.instagram_token_input)
+
+        self.instagram_account_id_input = QLineEdit(self.config.get("instagram_account_id", ""))
+        layout.addRow("Instagram Account ID:", self.instagram_account_id_input)
+
+        # Reference code settings
+        self.reference_prefix_input = QLineEdit(self.config.get("reference_prefix", "REF"))
+        layout.addRow("Reference Code Prefix:", self.reference_prefix_input)
+
+        save_btn = QPushButton("Save Settings")
+        save_btn.clicked.connect(self.save_settings)
+        layout.addRow(save_btn)
+
+    def save_settings(self):
+        self.config["watermark_text"] = self.watermark_text_input.text()
+        self.config["watermark_opacity"] = self.watermark_opacity_input.value()
+        self.config["watermark_font_size"] = self.watermark_font_size_input.value()
+        self.config["instagram_token"] = self.instagram_token_input.text()
+        self.config["instagram_account_id"] = self.instagram_account_id_input.text()
+        self.config["reference_prefix"] = self.reference_prefix_input.text()
+
+        try:
+            with open(CONFIG_FILE, "w") as f:
+                json.dump(self.config, f, indent=4)
+            QMessageBox.information(self, "Settings Saved", "Settings have been saved successfully.")
+            # Update services with new settings
+            self.reference_service.prefix = self.config["reference_prefix"]
+            self.social_media_service.access_token = self.config["instagram_token"]
+            self.social_media_service.instagram_account_id = self.config["instagram_account_id"]
+        except Exception as e:
+            QMessageBox.warning(self, "Save Error", f"Failed to save settings: {str(e)}")
+
     def compute_md5(self, file_path: str) -> str:
         hash_md5 = hashlib.md5()
         with open(file_path, "rb") as f:
@@ -330,15 +436,15 @@ class MainWindow(QMainWindow):
                 hash_md5.update(chunk)
         return hash_md5.hexdigest()
 
+    def load_config_file(self) -> Dict[str, Any]:
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r") as f:
+                    return json.load(f)
+            except Exception:
+                return {}
+        return {}
+
     def load_config(self):
-        try:
-            with open(CONFIG_FILE, "r") as f:
-                config = json.load(f)
-                self.social_media_service = SocialMediaService(
-                    access_token=config.get("instagram_token", ""),
-                    instagram_account_id=config.get("instagram_account_id", "")
-                )
-        except FileNotFoundError:
-            self.social_media_service = SocialMediaService(access_token="", instagram_account_id="")
-        except json.JSONDecodeError:
-            QMessageBox.warning(self, "Configuration Error", "Invalid configuration file format")
+        # This method is kept for backward compatibility, but config is loaded in __init__
+        pass
