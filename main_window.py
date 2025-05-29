@@ -88,6 +88,65 @@ class MainWindow(QMainWindow):
         
         print("Window initialized successfully")
 
+    def load_preview(self) -> None:
+        """Load and display the preview image."""
+        if not self.current_preview_path or not hasattr(self, 'preview_label'):
+            return
+
+        try:
+            # Check cache first
+            pixmap = self.image_cache.get(self.current_preview_path)
+            if pixmap:
+                self.preview_label.setPixmap(pixmap)
+                return
+
+            # Load and scale image
+            pixmap = QPixmap(self.current_preview_path)
+            scaled_pixmap = pixmap.scaled(
+                self.preview_label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            
+            # Cache the scaled pixmap
+            self.image_cache.put(self.current_preview_path, scaled_pixmap)
+            
+            # Update UI
+            self.preview_label.setPixmap(scaled_pixmap)
+            self.load_image_metadata(self.current_preview_path)
+            
+        except Exception as e:
+            self.status_bar.showMessage(f"Error loading preview: {str(e)}")
+            self.preview_label.setText("Error loading image")
+
+    def load_image_metadata(self, image_path: str) -> None:
+        """Load and display image metadata."""
+        self.metadata_tree.clear()
+        try:
+            with PILImage.open(image_path) as img:
+                # Basic image info
+                info_item = QTreeWidgetItem(["Image Info"])
+                self.metadata_tree.addTopLevelItem(info_item)
+                info_item.addChild(QTreeWidgetItem(["Format", img.format]))
+                info_item.addChild(QTreeWidgetItem(["Size", f"{img.width} x {img.height}"]))
+                info_item.addChild(QTreeWidgetItem(["Mode", img.mode]))
+                
+                # EXIF data
+                if hasattr(img, '_getexif') and img._getexif():
+                    exif = img._getexif()
+                    exif_item = QTreeWidgetItem(["EXIF Data"])
+                    self.metadata_tree.addTopLevelItem(exif_item)
+                    
+                    for tag_id in exif:
+                        try:
+                            tag = TAGS.get(tag_id, tag_id)
+                            value = str(exif[tag_id])
+                            exif_item.addChild(QTreeWidgetItem([tag, value]))
+                        except:
+                            continue
+        except Exception as e:
+            self.status_bar.showMessage(f"Error loading metadata: {str(e)}")
+
     def _setup_ui(self) -> None:
         """Set up the main user interface."""
         # Create central widget and main layout
